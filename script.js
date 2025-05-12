@@ -112,12 +112,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 length: 4,
                 value: ''
             },
-            version: {
+            infoMarker: {
                 offset: null,
                 length: null,
                 value: ''
             },
             timestamp: {
+                offset: null,
+                length: null,
+                value: ''
+            },
+            version: {
+                offset: null,
+                length: null,
+                value: ''
+            },
+            guid: {
                 offset: null,
                 length: null,
                 value: ''
@@ -149,7 +159,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 offset: null,
                 length: null,
                 value: ''
-            }
+            },
+            worldNameOwner: {
+                offset: null,
+                length: null,
+                value: ''
+            },
+            playerData: [],
+            objectData: [],
+            sections: []
         };
         
         try {
@@ -161,41 +179,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.warn('File does not start with SAVE signature, may not be a valid save file');
             }
             
-            // Search for VERSION string
-            let versionOffset = searchForPattern(data, 'VERSION');
-            if (versionOffset !== -1) {
-                // Found VERSION marker, now extract the version string
-                saveFileStructure.version.offset = versionOffset;
-                
-                // Extract version data, assuming fixed length or null-terminated
-                let versionLength = 0;
-                for (let i = versionOffset + 8; i < versionOffset + 30; i++) {
-                    if (data[i] === 0) {
-                        versionLength = i - (versionOffset + 8);
+            // Look for INFO marker (µ INFOˆ) - these are special characters in the format
+            let infoOffset = -1;
+            for (let i = 4; i < Math.min(20, data.length); i++) {
+                // Check for characters that might be part of the INFO marker pattern
+                if (data[i] === 181 || data[i] === 194) { // µ or similar special character
+                    // Check if the following bytes might contain "INFO"
+                    const possibleInfo = new TextDecoder().decode(data.slice(i, i + 10)).replace(/[^a-zA-Z]/g, '');
+                    if (possibleInfo.includes('INFO')) {
+                        infoOffset = i;
                         break;
                     }
-                }
-                
-                if (versionLength > 0) {
-                    saveFileStructure.version.length = versionLength;
-                    const versionData = data.slice(versionOffset + 8, versionOffset + 8 + versionLength);
-                    saveFileStructure.version.value = new TextDecoder().decode(versionData);
                 }
             }
             
+            if (infoOffset !== -1) {
+                saveFileStructure.infoMarker.offset = infoOffset;
+                saveFileStructure.infoMarker.length = 10; // Approximate length of marker
+                saveFileStructure.infoMarker.value = new TextDecoder().decode(data.slice(infoOffset, infoOffset + 10));
+            }
+            
             // Search for a timestamp-like pattern (2025-05-12T02:11:41)
-            // Look for T followed by : pattern which is common in ISO timestamps
             let timestampOffset = -1;
-            for (let i = 0; i < data.length - 10; i++) {
-                if (data[i] === 84 && // T
-                    data[i + 3] === 58) { // :
-                    // Look back to see if we have a likely timestamp
-                    let possibleStart = Math.max(0, i - 10);
-                    let sample = new TextDecoder().decode(data.slice(possibleStart, i + 10));
-                    if (/\d{4}-\d{2}-\d{2}T/.test(sample)) {
-                        timestampOffset = possibleStart;
-                        break;
-                    }
+            for (let i = 0; i < 100; i++) {
+                if (data[i] === 50 && data[i+1] === 48 && data[i+2] === 50 && // "202" - start of 202x year
+                    data[i+4] === 45) { // "-" in date format
+                    // Found a likely date pattern
+                    timestampOffset = i;
+                    break;
                 }
             }
             
@@ -203,11 +214,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Found a timestamp-like pattern
                 saveFileStructure.timestamp.offset = timestampOffset;
                 
-                // Estimate the length (ISO timestamps are typically around 24 chars)
-                let timestampEnd = timestampOffset + 30;
-                for (let i = timestampOffset; i < timestampOffset + 30; i++) {
-                    if (data[i] === 0 || data[i] === 32) { // null byte or space
-                        timestampEnd = i;
+                // Find the end of the timestamp
+                let timestampEnd = timestampOffset;
+                for (let i = timestampOffset; i < timestampOffset + 40; i++) {
+                    if (data[i] === 90) { // 'Z' at the end of ISO format
+                        timestampEnd = i + 1;
                         break;
                     }
                 }
@@ -217,99 +228,218 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveFileStructure.timestamp.value = new TextDecoder().decode(timestampData);
             }
             
+            // Look for the CINF or similar section marker after timestamp
+            let cinfOffset = -1;
+            if (timestampOffset !== -1) {
+                for (let i = timestampOffset + 25; i < timestampOffset + 40; i++) {
+                    // Check for 'C' followed by 'I' or 'N' or similar pattern
+                    if (data[i] === 67 && (data[i+1] === 73 || data[i+1] === 78)) {
+                        const section = new TextDecoder().decode(data.slice(i, i + 10)).replace(/[^a-zA-Z]/g, '');
+                        if (section.includes('CINF') || section.includes('CINFX')) {
+                            cinfOffset = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Parse version and other section data following the structure markers
+            if (cinfOffset !== -1) {
+                saveFileStructure.sections.push({
+                    name: 'CINF',
+                    offset: cinfOffset,
+                    length: 10 // Estimated
+                });
+                
+                // VERSION typically appears after CINF marker
+                const versionMarker = 'VERSION';
+                let versionOffset = searchForPattern(data, versionMarker, cinfOffset, cinfOffset + 200);
+                
+                if (versionOffset !== -1) {
+                    saveFileStructure.version.offset = versionOffset;
+                    saveFileStructure.version.length = versionMarker.length;
+                    saveFileStructure.version.value = 'Found at offset ' + versionOffset;
+                }
+                
+                // Look for GUIDs that typically follow VERSION
+                const guidMarkers = ['GUID_A', 'GUID_B', 'GUID_C', 'GUID_D'];
+                for (let i = 0; i < guidMarkers.length; i++) {
+                    const guidOffset = searchForPattern(data, guidMarkers[i], versionOffset, versionOffset + 300);
+                    if (guidOffset !== -1) {
+                        if (!saveFileStructure.guid.offset) {
+                            saveFileStructure.guid.offset = guidOffset;
+                        }
+                    }
+                }
+            }
+            
             // Search for WorldName marker
             const worldNameMarker = 'WorldName';
             let worldNameMarkerOffset = searchForPattern(data, worldNameMarker);
             
             if (worldNameMarkerOffset !== -1) {
-                // Found WorldName marker, now detect the actual world name value
-                // Assuming the world name starts after the marker and some padding
-                const worldNameStart = worldNameMarkerOffset + worldNameMarker.length + 1;
-                saveFileStructure.worldName.offset = worldNameStart;
+                // Found WorldName marker, now find the actual world name value
+                // In the sample file this appears near byte ~140-150
+                saveFileStructure.worldName.offset = worldNameMarkerOffset;
                 
-                // Find the end of the world name (null byte or next marker)
-                let worldNameEnd = worldNameStart;
-                for (let i = worldNameStart; i < worldNameStart + 50; i++) {
-                    if (data[i] === 0 || data[i] === 10) { // null byte or line feed
-                        worldNameEnd = i;
-                        break;
+                // Look for actual world name after owner markers
+                const worldNameOwnerMarker = 'WorldNameOwner';
+                let worldNameOwnerOffset = searchForPattern(data, worldNameOwnerMarker);
+                
+                if (worldNameOwnerOffset !== -1) {
+                    saveFileStructure.worldNameOwner.offset = worldNameOwnerOffset;
+                    
+                    // The actual world name appears after these markers
+                    // Look for a 'typical' looking string 20-50 bytes ahead
+                    for (let i = worldNameOwnerOffset + 20; i < worldNameOwnerOffset + 100; i++) {
+                        // Look for strings like "Centural", which should be non-zero printable ASCII
+                        if (data[i] > 32 && data[i] < 127) {
+                            // Find the start of a continuous string
+                            let stringStart = i;
+                            while (stringStart > worldNameOwnerOffset && data[stringStart-1] > 32 && data[stringStart-1] < 127) {
+                                stringStart--;
+                            }
+                            
+                            // Find the end of the string
+                            let stringEnd = stringStart;
+                            while (stringEnd < data.length && data[stringEnd] > 32 && data[stringEnd] < 127) {
+                                stringEnd++;
+                            }
+                            
+                            if (stringEnd - stringStart >= 3) { // At least 3 chars to be a valid name
+                                const worldNameCandidate = new TextDecoder().decode(data.slice(stringStart, stringEnd));
+                                saveFileStructure.worldName.value = worldNameCandidate;
+                                saveFileStructure.worldName.length = stringEnd - stringStart;
+                                // This is our best guess for the world name
+                                break;
+                            }
+                        }
                     }
                 }
                 
-                saveFileStructure.worldName.length = worldNameEnd - worldNameStart;
-                if (saveFileStructure.worldName.length > 0) {
-                    const worldNameData = data.slice(worldNameStart, worldNameEnd);
-                    saveFileStructure.worldName.value = new TextDecoder().decode(worldNameData).trim();
-                }
-                
-                // Search for WorldMapName marker
+                // Find WorldMapName
                 const worldMapMarker = 'WorldMapName';
                 let worldMapMarkerOffset = searchForPattern(data, worldMapMarker);
                 
                 if (worldMapMarkerOffset !== -1) {
-                    // Found WorldMapName marker
-                    const worldMapStart = worldMapMarkerOffset + worldMapMarker.length + 1;
-                    saveFileStructure.worldMapName.offset = worldMapStart;
+                    saveFileStructure.worldMapName.offset = worldMapMarkerOffset;
                     
-                    // Find the end of the world map name
-                    let worldMapEnd = worldMapStart;
-                    for (let i = worldMapStart; i < worldMapStart + 50; i++) {
-                        if (data[i] === 0 || data[i] === 10) { // null byte or line feed
-                            worldMapEnd = i;
+                    // The structure is similar - look for data after markers
+                    for (let i = worldMapMarkerOffset + 15; i < worldMapMarkerOffset + 70; i++) {
+                        if (data[i] > 32 && data[i] < 127) {
+                            let stringStart = i;
+                            while (stringStart > worldMapMarkerOffset && data[stringStart-1] > 32 && data[stringStart-1] < 127) {
+                                stringStart--;
+                            }
+                            
+                            let stringEnd = stringStart;
+                            while (stringEnd < data.length && data[stringEnd] > 32 && data[stringEnd] < 127) {
+                                stringEnd++;
+                            }
+                            
+                            if (stringEnd - stringStart >= 2) { // Valid name length
+                                const mapName = new TextDecoder().decode(data.slice(stringStart, stringEnd));
+                                saveFileStructure.worldMapName.value = mapName;
+                                saveFileStructure.worldMapName.length = stringEnd - stringStart;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Find FriendlyFire setting
+                const friendlyFireMarker = 'FriendlyFire';
+                let friendlyFireOffset = searchForPattern(data, friendlyFireMarker);
+                
+                if (friendlyFireOffset !== -1) {
+                    // Found FriendlyFire marker, value is nearby
+                    saveFileStructure.friendlyFire.offset = friendlyFireOffset;
+                    
+                    // Look for a single byte value within a reasonable range from the marker
+                    for (let i = friendlyFireOffset + friendlyFireMarker.length; i < friendlyFireOffset + 30; i++) {
+                        // Typical boolean values are 0 or 1
+                        if (data[i] === 0 || data[i] === 1) {
+                            saveFileStructure.friendlyFire.value = data[i];
                             break;
                         }
                     }
+                }
+                
+                // Find SessionPrivacy
+                const sessionPrivacyMarker = 'SessionPrivacy';
+                let sessionPrivacyOffset = searchForPattern(data, sessionPrivacyMarker);
+                
+                if (sessionPrivacyOffset !== -1) {
+                    saveFileStructure.sessionPrivacy.offset = sessionPrivacyOffset;
                     
-                    saveFileStructure.worldMapName.length = worldMapEnd - worldMapStart;
-                    if (saveFileStructure.worldMapName.length > 0) {
-                        const worldMapData = data.slice(worldMapStart, worldMapEnd);
-                        saveFileStructure.worldMapName.value = new TextDecoder().decode(worldMapData).trim();
+                    // Similar approach to find the value
+                    for (let i = sessionPrivacyOffset + sessionPrivacyMarker.length; i < sessionPrivacyOffset + 30; i++) {
+                        if (data[i] >= 0 && data[i] <= 2) { // Privacy is usually 0, 1, or 2
+                            saveFileStructure.sessionPrivacy.value = data[i];
+                            break;
+                        }
                     }
+                }
+                
+                // Find owner ID
+                const worldOwnerIdMarker = 'WorldOwnerId';
+                let worldOwnerIdOffset = searchForPattern(data, worldOwnerIdMarker);
+                
+                if (worldOwnerIdOffset !== -1) {
+                    saveFileStructure.worldOwnerId.offset = worldOwnerIdOffset;
                     
-                    // Search for FriendlyFire marker
-                    const friendlyFireMarker = 'FriendlyFire';
-                    let friendlyFireOffset = searchForPattern(data, friendlyFireMarker);
-                    
-                    if (friendlyFireOffset !== -1) {
-                        // Found FriendlyFire marker, value is likely a byte after the marker
-                        saveFileStructure.friendlyFire.offset = friendlyFireOffset + friendlyFireMarker.length + 1;
-                        saveFileStructure.friendlyFire.value = data[saveFileStructure.friendlyFire.offset];
-                    }
-                    
-                    // Search for SessionPrivacy marker
-                    const sessionPrivacyMarker = 'SessionPrivacy';
-                    let sessionPrivacyOffset = searchForPattern(data, sessionPrivacyMarker);
-                    
-                    if (sessionPrivacyOffset !== -1) {
-                        // Found SessionPrivacy marker
-                        saveFileStructure.sessionPrivacy.offset = sessionPrivacyOffset + sessionPrivacyMarker.length + 1;
-                        saveFileStructure.sessionPrivacy.value = data[saveFileStructure.sessionPrivacy.offset];
-                        
-                        // Search for SessionPasswd marker
-                        const sessionPasswdMarker = 'SessionPasswd';
-                        let sessionPasswdOffset = searchForPattern(data, sessionPasswdMarker);
-                        
-                        if (sessionPasswdOffset !== -1) {
-                            // Found SessionPasswd marker
-                            const sessionPasswdStart = sessionPasswdOffset + sessionPasswdMarker.length + 1;
-                            saveFileStructure.sessionPassword.offset = sessionPasswdStart;
-                            
-                            // Find the end of the password
-                            let sessionPasswdEnd = sessionPasswdStart;
-                            for (let i = sessionPasswdStart; i < sessionPasswdStart + 50; i++) {
-                                if (data[i] === 0 || data[i] === 10) { // null byte or line feed
-                                    sessionPasswdEnd = i;
-                                    break;
-                                }
+                    // Find the owner name
+                    for (let i = worldOwnerIdOffset + 15; i < worldOwnerIdOffset + 50; i++) {
+                        if (data[i] > 32 && data[i] < 127) {
+                            let stringStart = i;
+                            while (stringStart > worldOwnerIdOffset && data[stringStart-1] > 32 && data[stringStart-1] < 127) {
+                                stringStart--;
                             }
                             
-                            saveFileStructure.sessionPassword.length = sessionPasswdEnd - sessionPasswdStart;
-                            if (saveFileStructure.sessionPassword.length > 0) {
-                                const passwordData = data.slice(sessionPasswdStart, sessionPasswdEnd);
-                                saveFileStructure.sessionPassword.value = new TextDecoder().decode(passwordData).trim();
+                            let stringEnd = stringStart;
+                            while (stringEnd < data.length && data[stringEnd] > 32 && data[stringEnd] < 127) {
+                                stringEnd++;
+                            }
+                            
+                            if (stringEnd - stringStart >= 3) { // Valid name length
+                                const ownerId = new TextDecoder().decode(data.slice(stringStart, stringEnd));
+                                saveFileStructure.worldOwnerId.value = ownerId;
+                                saveFileStructure.worldOwnerId.length = stringEnd - stringStart;
+                                break;
                             }
                         }
                     }
+                }
+            }
+            
+            // Try to identify other key sections like GLOB, LVLS, LEVL, etc.
+            const keyMarkers = ['GLOB[', 'LVLS', 'LEVL', 'META', 'NOBJ', 'PROP', 'SPWN'];
+            let lastPosition = 0;
+            
+            for (const marker of keyMarkers) {
+                let position = 0;
+                while ((position = searchForPattern(data, marker, lastPosition)) !== -1) {
+                    saveFileStructure.sections.push({
+                        name: marker,
+                        offset: position,
+                        length: marker.length
+                    });
+                    lastPosition = position + marker.length + 1;
+                }
+            }
+            
+            // Identify player data after the markers - this would be more complex
+            // For simplicity, we'll just identify possible player-related sections
+            const playerRelatedMarkers = ['Bonesdog', 'PROP'];
+            for (const marker of playerRelatedMarkers) {
+                let position = 0;
+                while ((position = searchForPattern(data, marker, lastPosition)) !== -1) {
+                    saveFileStructure.playerData.push({
+                        marker: marker,
+                        offset: position,
+                        value: new TextDecoder().decode(data.slice(position, position + 50)).replace(/[^\x20-\x7E]/g, '.')
+                    });
+                    lastPosition = position + marker.length + 1;
                 }
             }
             
@@ -320,12 +450,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
-    // Helper function to search for text pattern in binary data
-    function searchForPattern(data, pattern) {
+    // Helper function to search for text pattern in binary data with bounds
+    function searchForPattern(data, pattern, startPos = 0, endPos = data.length) {
         const patternBytes = new TextEncoder().encode(pattern);
         const patternLength = patternBytes.length;
+        const searchEndPos = Math.min(endPos, data.length);
         
-        for (let i = 0; i <= data.length - patternLength; i++) {
+        for (let i = startPos; i <= searchEndPos - patternLength; i++) {
             let match = true;
             for (let j = 0; j < patternLength; j++) {
                 if (data[i + j] !== patternBytes[j]) {
@@ -364,14 +495,19 @@ document.addEventListener('DOMContentLoaded', () => {
             // Signature
             headerHtml += `<tr><td>0x${saveFileStructure.signature.offset.toString(16).padStart(2, '0')}</td><td>Signature</td><td>${saveFileStructure.signature.value}</td></tr>`;
             
-            // Version
-            if (saveFileStructure.version.offset !== null) {
-                headerHtml += `<tr><td>0x${saveFileStructure.version.offset.toString(16).padStart(2, '0')}</td><td>Version</td><td>${saveFileStructure.version.value}</td></tr>`;
+            // INFO marker
+            if (saveFileStructure.infoMarker.offset !== null) {
+                headerHtml += `<tr><td>0x${saveFileStructure.infoMarker.offset.toString(16).padStart(2, '0')}</td><td>INFO Marker</td><td>${escapeHtml(saveFileStructure.infoMarker.value)}</td></tr>`;
             }
             
             // Timestamp
             if (saveFileStructure.timestamp.offset !== null) {
                 headerHtml += `<tr><td>0x${saveFileStructure.timestamp.offset.toString(16).padStart(2, '0')}</td><td>Timestamp</td><td>${saveFileStructure.timestamp.value}</td></tr>`;
+            }
+            
+            // Key sections
+            for (const section of saveFileStructure.sections) {
+                headerHtml += `<tr><td>0x${section.offset.toString(16).padStart(2, '0')}</td><td>Section</td><td>${section.name}</td></tr>`;
             }
             
             headerHtml += '</table>';
@@ -382,17 +518,27 @@ document.addEventListener('DOMContentLoaded', () => {
             worldInfoHtml += '<tr><th>Setting</th><th>Value</th><th>Offset</th></tr>';
             
             // World Name
-            if (saveFileStructure.worldName.offset !== null) {
-                worldInfoHtml += `<tr><td>World Name</td><td>${saveFileStructure.worldName.value || 'Not set'}</td><td>0x${saveFileStructure.worldName.offset.toString(16).padStart(2, '0')}</td></tr>`;
+            if (saveFileStructure.worldName.value) {
+                worldInfoHtml += `<tr><td>World Name</td><td>${saveFileStructure.worldName.value || 'Not set'}</td><td>0x${saveFileStructure.worldName.offset?.toString(16).padStart(2, '0') || '-'}</td></tr>`;
             } else {
                 worldInfoHtml += `<tr><td>World Name</td><td>Unknown</td><td>-</td></tr>`;
             }
             
             // World Map
-            if (saveFileStructure.worldMapName.offset !== null) {
-                worldInfoHtml += `<tr><td>World Map</td><td>${saveFileStructure.worldMapName.value || 'Not set'}</td><td>0x${saveFileStructure.worldMapName.offset.toString(16).padStart(2, '0')}</td></tr>`;
+            if (saveFileStructure.worldMapName.value) {
+                worldInfoHtml += `<tr><td>World Map</td><td>${saveFileStructure.worldMapName.value || 'Not set'}</td><td>0x${saveFileStructure.worldMapName.offset?.toString(16).padStart(2, '0') || '-'}</td></tr>`;
             } else {
                 worldInfoHtml += `<tr><td>World Map</td><td>Unknown</td><td>-</td></tr>`;
+            }
+            
+            // World Owner ID
+            if (saveFileStructure.worldOwnerId.value) {
+                worldInfoHtml += `<tr><td>World Owner ID</td><td>${saveFileStructure.worldOwnerId.value || 'Not set'}</td><td>0x${saveFileStructure.worldOwnerId.offset?.toString(16).padStart(2, '0') || '-'}</td></tr>`;
+            }
+            
+            // World Owner Name
+            if (saveFileStructure.worldNameOwner.value) {
+                worldInfoHtml += `<tr><td>World Owner Name</td><td>${saveFileStructure.worldNameOwner.value || 'Not set'}</td><td>0x${saveFileStructure.worldNameOwner.offset?.toString(16).padStart(2, '0') || '-'}</td></tr>`;
             }
             
             // Friendly Fire
@@ -412,23 +558,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 worldInfoHtml += `<tr><td>Session Privacy</td><td>${privacyValue}</td><td>0x${saveFileStructure.sessionPrivacy.offset.toString(16).padStart(2, '0')}</td></tr>`;
             }
             
-            // Session Password
-            if (saveFileStructure.sessionPassword.offset !== null) {
-                worldInfoHtml += `<tr><td>Session Password</td><td>${saveFileStructure.sessionPassword.value || 'Not set'}</td><td>0x${saveFileStructure.sessionPassword.offset.toString(16).padStart(2, '0')}</td></tr>`;
-            }
-            
             worldInfoHtml += '</table>';
             worldInfo.innerHTML = worldInfoHtml;
             
             // Player data section
-            playerData.innerHTML = '<p>Advanced player data parsing requires more specific knowledge of the save file format.</p>';
+            let playerDataHtml = '';
+            
+            if (saveFileStructure.playerData.length > 0) {
+                playerDataHtml = '<table class="data-table">';
+                playerDataHtml += '<tr><th>Offset</th><th>Marker</th><th>Data</th></tr>';
+                
+                for (const entry of saveFileStructure.playerData) {
+                    playerDataHtml += `<tr><td>0x${entry.offset.toString(16).padStart(2, '0')}</td><td>${entry.marker}</td><td>${entry.value}</td></tr>`;
+                }
+                
+                playerDataHtml += '</table>';
+            } else {
+                playerDataHtml = '<p>Advanced player data parsing requires more specific knowledge of the save file format.</p>';
+            }
+            
+            playerData.innerHTML = playerDataHtml;
             
             // Create hex view
             let hexDump = '';
             let textDump = '';
             const bytesPerLine = 16;
             
-            for (let i = 0; i < Math.min(data.length, 1000); i += bytesPerLine) {
+            // Show more data for better analysis
+            const displayBytes = Math.min(data.length, 2000);
+            
+            for (let i = 0; i < displayBytes; i += bytesPerLine) {
                 hexDump += `${i.toString(16).padStart(8, '0')}: `;
                 
                 for (let j = 0; j < bytesPerLine; j++) {
@@ -454,7 +613,7 @@ document.addEventListener('DOMContentLoaded', () => {
             hexView.textContent = hexDump;
             
             // Create an ASCII text view (for strings)
-            for (let i = 0; i < Math.min(data.length, 1000); i++) {
+            for (let i = 0; i < displayBytes; i++) {
                 const byte = data[i];
                 textDump += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
             }
@@ -465,7 +624,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let editHtml = '';
             
             // Add world name edit field
-            if (saveFileStructure.worldName.offset !== null) {
+            if (saveFileStructure.worldName.offset !== null || saveFileStructure.worldName.value) {
                 editHtml += `
                 <div class="edit-field">
                     <label for="edit-world-name">World Name:</label>
@@ -475,7 +634,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             // Add world map edit field
-            if (saveFileStructure.worldMapName.offset !== null) {
+            if (saveFileStructure.worldMapName.offset !== null || saveFileStructure.worldMapName.value) {
                 editHtml += `
                 <div class="edit-field">
                     <label for="edit-world-map">World Map:</label>
@@ -511,12 +670,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 `;
             }
             
-            // Add session password field
-            if (saveFileStructure.sessionPassword.offset !== null) {
+            // Add world owner fields if found
+            if (saveFileStructure.worldOwnerId.value) {
                 editHtml += `
                 <div class="edit-field">
-                    <label for="edit-session-password">Session Password:</label>
-                    <input type="text" id="edit-session-password" value="${saveFileStructure.sessionPassword.value || ''}">
+                    <label for="edit-world-owner-id">World Owner ID:</label>
+                    <input type="text" id="edit-world-owner-id" value="${saveFileStructure.worldOwnerId.value || ''}">
                 </div>
                 `;
             }
@@ -527,6 +686,16 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Error analyzing save file:', error);
             headerInfo.innerHTML = `<p class="error">Error analyzing save file: ${error.message}</p>`;
         }
+    }
+    
+    // Helper function to escape HTML special characters
+    function escapeHtml(unsafe) {
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
     }
     
     // Handle save changes
@@ -546,13 +715,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // Apply changes using detected structure
             
             // World Name
-            if (saveFileStructure.worldName.offset !== null && saveFileStructure.worldName.length !== null) {
+            if (saveFileStructure.worldName.offset !== null && saveFileStructure.worldName.length !== null && saveFileStructure.worldName.value) {
                 const worldName = document.getElementById('edit-world-name').value;
                 writeString(modifiedData, saveFileStructure.worldName.offset, worldName, saveFileStructure.worldName.length);
             }
             
             // World Map
-            if (saveFileStructure.worldMapName.offset !== null && saveFileStructure.worldMapName.length !== null) {
+            if (saveFileStructure.worldMapName.offset !== null && saveFileStructure.worldMapName.length !== null && saveFileStructure.worldMapName.value) {
                 const worldMap = document.getElementById('edit-world-map').value;
                 writeString(modifiedData, saveFileStructure.worldMapName.offset, worldMap, saveFileStructure.worldMapName.length);
             }
@@ -569,10 +738,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 modifiedData[saveFileStructure.sessionPrivacy.offset] = parseInt(sessionPrivacy);
             }
             
-            // Session Password
-            if (saveFileStructure.sessionPassword.offset !== null && saveFileStructure.sessionPassword.length !== null) {
-                const sessionPassword = document.getElementById('edit-session-password').value;
-                writeString(modifiedData, saveFileStructure.sessionPassword.offset, sessionPassword, saveFileStructure.sessionPassword.length);
+            // World Owner ID
+            if (saveFileStructure.worldOwnerId.offset !== null && saveFileStructure.worldOwnerId.length !== null && saveFileStructure.worldOwnerId.value) {
+                const worldOwnerId = document.getElementById('edit-world-owner-id').value;
+                writeString(modifiedData, saveFileStructure.worldOwnerId.offset, worldOwnerId, saveFileStructure.worldOwnerId.length);
             }
             
             // Create a Blob from the modified data
@@ -602,6 +771,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Helper function to write string to buffer
     function writeString(buffer, offset, string, maxLength) {
+        if (!offset || offset < 0 || !maxLength || maxLength <= 0) {
+            console.warn('Invalid parameters for writeString');
+            return;
+        }
+        
         // Clear the existing data
         for (let i = 0; i < maxLength; i++) {
             buffer[offset + i] = 0;

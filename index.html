@@ -18,6 +18,7 @@
             <button class="tab-btn active" data-tab="upload">Upload</button>
             <button class="tab-btn" data-tab="analyze">Analyze</button>
             <button class="tab-btn" data-tab="edit">Edit</button>
+            <button class="tab-btn" data-tab="help">Help</button>
         </div>
 
         <div class="tab-content">
@@ -40,13 +41,20 @@
                     <div class="section-title">World Information</div>
                     <div id="world-info" class="info-section"></div>
                     
-                    <div class="section-title">Player Data</div>
+                    <div class="section-title">Player & World Data</div>
                     <div id="player-data" class="info-section"></div>
                     
                     <div class="section-title">Raw Data View</div>
+                    <p class="data-note">Displaying the first 2000 bytes of the save file:</p>
                     <div class="raw-container">
-                        <div id="hex-view" class="raw-view"></div>
-                        <div id="text-view" class="raw-view"></div>
+                        <div class="raw-view-wrapper">
+                            <div class="raw-view-title">Hex View</div>
+                            <div id="hex-view" class="raw-view"></div>
+                        </div>
+                        <div class="raw-view-wrapper">
+                            <div class="raw-view-title">Text View</div>
+                            <div id="text-view" class="raw-view"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -59,6 +67,42 @@
                     <div id="edit-fields"></div>
                     <button id="save-changes" class="action-btn">Save Changes</button>
                     <a id="download-link" class="action-btn" download="modified_save.sav">Download Modified Save</a>
+                </div>
+            </div>
+            
+            <div id="help" class="tab-pane">
+                <div class="help-container">
+                    <h2>About RuneScape Dragonwilds Save Files</h2>
+                    <p>RuneScape Dragonwilds save files (.sav) contain all the information about your game world including:</p>
+                    <ul>
+                        <li>World settings (name, map type, friendly fire settings)</li>
+                        <li>Player information and progress</li>
+                        <li>Object placements and properties</li>
+                        <li>Game state and metadata</li>
+                    </ul>
+                    
+                    <h3>File Structure</h3>
+                    <p>The save file has a binary format with the following general structure:</p>
+                    <ol>
+                        <li><strong>Header</strong> - Contains the "SAVE" signature and version information</li>
+                        <li><strong>Metadata</strong> - Includes timestamp and world basic information</li>
+                        <li><strong>World Settings</strong> - Contains world name, map type, and game rules</li>
+                        <li><strong>Player Data</strong> - Contains player inventories, stats, and positions</li>
+                        <li><strong>Game Objects</strong> - Information about all objects in the world</li>
+                    </ol>
+                    
+                    <h3>Using the Analyzer</h3>
+                    <p>To analyze a save file:</p>
+                    <ol>
+                        <li>Upload your .sav file in the Upload tab</li>
+                        <li>Navigate to the Analyze tab to view file contents</li>
+                        <li>Use the Edit tab to make changes to world settings</li>
+                        <li>Download the modified file to use in your game</li>
+                    </ol>
+                    
+                    <div class="limitations-note">
+                        <p><strong>Note:</strong> This tool performs best-effort analysis of save files. The exact format of RuneScape Dragonwilds save files is proprietary, and this tool may not correctly identify all elements.</p>
+                    </div>
                 </div>
             </div>
         </div>
