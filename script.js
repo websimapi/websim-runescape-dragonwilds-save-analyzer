@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let saveFileData = null;
     let saveFileArrayBuffer = null;
     let saveFileStructure = null;
+    let foundJsonData = []; // Store found JSON structures
     
     // Handle files
     function handleFiles(files) {
@@ -105,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Detect save file structure
     function detectSaveFileStructure(data) {
-        // Initialize an empty structure object
+        // Initialize structure object as before
         saveFileStructure = {
             signature: {
                 offset: 0,
@@ -167,7 +168,8 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             playerData: [],
             objectData: [],
-            sections: []
+            sections: [],
+            jsonData: [] // Add property to store JSON structures
         };
         
         try {
@@ -428,6 +430,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             
+            // Search for JSON data structures
+            foundJsonData = [];
+            findJsonStructures(data);
+            saveFileStructure.jsonData = foundJsonData;
+            
             // Identify player data after the markers - this would be more complex
             // For simplicity, we'll just identify possible player-related sections
             const playerRelatedMarkers = ['Bonesdog', 'PROP'];
@@ -470,6 +477,120 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         return -1; // Pattern not found
+    }
+    
+    // Find JSON structures in the file
+    function findJsonStructures(data) {
+        const textData = new TextDecoder().decode(data);
+        const possibleJsonStartPositions = [];
+        
+        // Look for typical JSON start patterns
+        for (let i = 0; i < data.length; i++) {
+            // Check for '{' character with digits or "Version" nearby
+            if (data[i] === 123) { // '{' character
+                // Check if this might be the start of a JSON object
+                // Look for patterns like {"Version" or {\t"Version"
+                let potentialJson = new TextDecoder().decode(data.slice(i, Math.min(i + 50, data.length)));
+                if (potentialJson.includes('"Version"') || 
+                    /\{\s*\d+\s*:/.test(potentialJson) || 
+                    /\{\s*"\w+"\s*:/.test(potentialJson)) {
+                    possibleJsonStartPositions.push(i);
+                }
+            }
+        }
+        
+        console.log(`Found ${possibleJsonStartPositions.length} potential JSON starting positions`);
+        
+        // For each potential start, try to extract valid JSON
+        for (const startPos of possibleJsonStartPositions) {
+            try {
+                let jsonEndPos = findMatchingCloseBrace(data, startPos);
+                if (jsonEndPos !== -1) {
+                    const jsonSlice = data.slice(startPos, jsonEndPos + 1);
+                    const jsonString = new TextDecoder().decode(jsonSlice);
+                    
+                    try {
+                        // Try to parse it as JSON
+                        const parsedJson = JSON.parse(jsonString);
+                        
+                        // If successful, store it
+                        foundJsonData.push({
+                            offset: startPos,
+                            length: jsonEndPos - startPos + 1,
+                            data: parsedJson,
+                            rawString: jsonString
+                        });
+                        
+                        console.log(`Found valid JSON at offset 0x${startPos.toString(16)}`, parsedJson);
+                    } catch (jsonError) {
+                        // This wasn't valid JSON - try to clean it up
+                        try {
+                            // Convert tabs to spaces, fix common issues
+                            const cleanedJson = jsonString
+                                .replace(/\t/g, ' ')
+                                .replace(/,\s*}/g, '}')
+                                .replace(/,\s*]/g, ']')
+                                .replace(/\'/g, '"')
+                                .replace(/\\(?!["\\bfnrt\/])/g, '\\\\'); // Fix escaping
+                            
+                            const parsedJson = JSON.parse(cleanedJson);
+                            foundJsonData.push({
+                                offset: startPos,
+                                length: jsonEndPos - startPos + 1,
+                                data: parsedJson,
+                                rawString: jsonString,
+                                cleaned: true
+                            });
+                            
+                            console.log(`Found and cleaned JSON at offset 0x${startPos.toString(16)}`, parsedJson);
+                        } catch (cleanError) {
+                            // Not valid JSON even after cleaning
+                            console.log(`Invalid JSON at offset 0x${startPos.toString(16)}: ${jsonError.message}`);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error(`Error processing potential JSON at offset 0x${startPos.toString(16)}:`, error);
+            }
+        }
+    }
+    
+    // Find matching closing brace for a JSON object
+    function findMatchingCloseBrace(data, startPos) {
+        let depth = 0;
+        let inString = false;
+        let escapeNext = false;
+        
+        for (let i = startPos; i < data.length; i++) {
+            const char = data[i];
+            
+            if (escapeNext) {
+                escapeNext = false;
+                continue;
+            }
+            
+            if (char === 34) { // double quote
+                inString = !inString;
+            } else if (inString && char === 92) { // backslash in string
+                escapeNext = true;
+            } else if (!inString) {
+                if (char === 123) { // opening brace
+                    depth++;
+                } else if (char === 125) { // closing brace
+                    depth--;
+                    if (depth === 0) {
+                        return i; // Found matching close brace
+                    }
+                }
+            }
+            
+            // Safety check - if we're too deep or gone too far, abort
+            if (depth > 100 || i - startPos > 100000) {
+                return -1;
+            }
+        }
+        
+        return -1; // No matching close brace found
     }
     
     // Analyze save file
@@ -561,10 +682,57 @@ document.addEventListener('DOMContentLoaded', () => {
             worldInfoHtml += '</table>';
             worldInfo.innerHTML = worldInfoHtml;
             
-            // Player data section
+            // Update player data section to include JSON info
             let playerDataHtml = '';
             
-            if (saveFileStructure.playerData.length > 0) {
+            if (saveFileStructure.jsonData && saveFileStructure.jsonData.length > 0) {
+                playerDataHtml = `<p>Found ${saveFileStructure.jsonData.length} JSON data structures in save file:</p>`;
+                playerDataHtml += '<div class="json-summary-container">';
+                
+                saveFileStructure.jsonData.forEach((json, index) => {
+                    // Create a summary of each JSON structure
+                    let jsonSummary = '';
+                    
+                    // Try to identify what this JSON represents
+                    let jsonType = 'Unknown';
+                    
+                    if (json.data.Version) {
+                        if (json.data.Definitions && Array.isArray(json.data.Definitions)) {
+                            jsonType = 'Event Definitions';
+                        } else if (json.data.MaxSlotIndex !== undefined || json.data.AllowAdds !== undefined) {
+                            jsonType = 'Inventory';
+                        } else {
+                            jsonType = 'Game Data';
+                        }
+                    }
+                    
+                    playerDataHtml += `
+                    <div class="json-summary">
+                        <h4>JSON Structure #${index + 1} - ${jsonType}</h4>
+                        <p>Offset: 0x${json.offset.toString(16).padStart(8, '0')}, Size: ${json.length} bytes</p>
+                        <button class="action-btn view-json-btn" data-index="${index}">View/Edit JSON</button>
+                    </div>`;
+                });
+                
+                playerDataHtml += '</div>';
+                
+                // Add the JSON viewer modal
+                playerDataHtml += `
+                <div id="json-modal" class="modal">
+                    <div class="modal-content">
+                        <span class="close-modal">&times;</span>
+                        <h3 id="json-modal-title">JSON Data</h3>
+                        <div class="json-edit-container">
+                            <textarea id="json-editor"></textarea>
+                        </div>
+                        <div class="json-buttons">
+                            <button id="save-json-btn" class="action-btn">Save Changes</button>
+                            <button id="format-json-btn" class="action-btn">Format JSON</button>
+                        </div>
+                        <p class="json-warning">Warning: Editing JSON data directly may cause game corruption if not done correctly.</p>
+                    </div>
+                </div>`;
+            } else if (saveFileStructure.playerData.length > 0) {
                 playerDataHtml = '<table class="data-table">';
                 playerDataHtml += '<tr><th>Offset</th><th>Marker</th><th>Data</th></tr>';
                 
@@ -575,9 +743,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 playerDataHtml += '</table>';
             } else {
                 playerDataHtml = '<p>Advanced player data parsing requires more specific knowledge of the save file format.</p>';
+                playerDataHtml += '<p>No JSON data structures detected in this save file.</p>';
             }
             
             playerData.innerHTML = playerDataHtml;
+            
+            // Set up JSON viewer modal functionality if JSON was found
+            if (saveFileStructure.jsonData && saveFileStructure.jsonData.length > 0) {
+                setupJsonModal();
+            }
             
             // Create hex view
             let hexDump = '';
@@ -698,6 +872,191 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/'/g, "&#039;");
     }
     
+    // Set up the JSON modal for viewing and editing
+    function setupJsonModal() {
+        const modal = document.getElementById('json-modal');
+        const closeBtn = document.querySelector('.close-modal');
+        const viewBtns = document.querySelectorAll('.view-json-btn');
+        const saveJsonBtn = document.getElementById('save-json-btn');
+        const formatJsonBtn = document.getElementById('format-json-btn');
+        const jsonEditor = document.getElementById('json-editor');
+        const jsonModalTitle = document.getElementById('json-modal-title');
+        
+        let currentJsonIndex = -1;
+        
+        // Open modal when View/Edit button is clicked
+        viewBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.getAttribute('data-index'));
+                currentJsonIndex = index;
+                
+                const jsonData = saveFileStructure.jsonData[index];
+                let jsonType = 'Unknown';
+                
+                if (jsonData.data.Version) {
+                    if (jsonData.data.Definitions && Array.isArray(jsonData.data.Definitions)) {
+                        jsonType = 'Event Definitions';
+                    } else if (jsonData.data.MaxSlotIndex !== undefined || jsonData.data.AllowAdds !== undefined) {
+                        jsonType = 'Inventory';
+                    } else {
+                        jsonType = 'Game Data';
+                    }
+                }
+                
+                jsonModalTitle.textContent = `JSON Data Structure #${index + 1} - ${jsonType}`;
+                
+                // Format the JSON for better readability
+                jsonEditor.value = JSON.stringify(jsonData.data, null, 2);
+                
+                modal.style.display = 'block';
+            });
+        });
+        
+        // Close modal when X is clicked
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        // Close modal when clicking outside it
+        window.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+        
+        // Format JSON button
+        formatJsonBtn.addEventListener('click', () => {
+            try {
+                const jsonObj = JSON.parse(jsonEditor.value);
+                jsonEditor.value = JSON.stringify(jsonObj, null, 2);
+            } catch (error) {
+                alert(`Error formatting JSON: ${error.message}`);
+            }
+        });
+        
+        // Save JSON changes
+        saveJsonBtn.addEventListener('click', () => {
+            if (currentJsonIndex === -1) return;
+            
+            try {
+                // Parse the edited JSON to validate it
+                const editedJson = JSON.parse(jsonEditor.value);
+                
+                // Update the JSON in our data structure
+                saveFileStructure.jsonData[currentJsonIndex].data = editedJson;
+                
+                // Mark this JSON as modified for when we save changes
+                saveFileStructure.jsonData[currentJsonIndex].modified = true;
+                
+                alert('JSON changes saved. Click "Save Changes" on the Edit tab to apply to the save file.');
+                modal.style.display = 'none';
+            } catch (error) {
+                alert(`Error: Invalid JSON: ${error.message}`);
+            }
+        });
+    }
+    
+    // Add JSON editor styling
+    function addJsonEditorStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            .json-summary-container {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin-bottom: 20px;
+            }
+            
+            .json-summary {
+                flex: 1 1 300px;
+                padding: 15px;
+                background-color: #f0f0f0;
+                border-radius: 8px;
+                border: 1px solid #ddd;
+            }
+            
+            .json-summary h4 {
+                margin-top: 0;
+                color: #332200;
+                margin-bottom: 10px;
+            }
+            
+            .view-json-btn {
+                margin-top: 10px;
+                padding: 5px 10px;
+                font-size: 14px;
+            }
+            
+            /* Modal styles */
+            .modal {
+                display: none;
+                position: fixed;
+                z-index: 1000;
+                left: 0;
+                top: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.7);
+            }
+            
+            .modal-content {
+                background-color: #fff;
+                margin: 5vh auto;
+                width: 80%;
+                max-width: 900px;
+                max-height: 90vh;
+                overflow-y: auto;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            }
+            
+            .close-modal {
+                color: #aaa;
+                float: right;
+                font-size: 28px;
+                font-weight: bold;
+                cursor: pointer;
+            }
+            
+            .close-modal:hover {
+                color: #333;
+            }
+            
+            .json-edit-container {
+                margin: 15px 0;
+            }
+            
+            #json-editor {
+                width: 100%;
+                height: 60vh;
+                min-height: 300px;
+                font-family: monospace;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                white-space: pre;
+                font-size: 14px;
+            }
+            
+            .json-buttons {
+                margin: 15px 0;
+            }
+            
+            .json-warning {
+                color: #856404;
+                background-color: #fff3cd;
+                padding: 10px;
+                border-radius: 4px;
+                margin-top: 15px;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Call this on page load
+    addJsonEditorStyles();
+    
     // Handle save changes
     const saveChangesBtn = document.getElementById('save-changes');
     const downloadLink = document.getElementById('download-link');
@@ -713,7 +1072,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const modifiedData = new Uint8Array(saveFileArrayBuffer.slice(0));
             
             // Apply changes using detected structure
-            
             // World Name
             if (saveFileStructure.worldName.offset !== null && saveFileStructure.worldName.length !== null && saveFileStructure.worldName.value) {
                 const worldName = document.getElementById('edit-world-name').value;
@@ -742,6 +1100,36 @@ document.addEventListener('DOMContentLoaded', () => {
             if (saveFileStructure.worldOwnerId.offset !== null && saveFileStructure.worldOwnerId.length !== null && saveFileStructure.worldOwnerId.value) {
                 const worldOwnerId = document.getElementById('edit-world-owner-id').value;
                 writeString(modifiedData, saveFileStructure.worldOwnerId.offset, worldOwnerId, saveFileStructure.worldOwnerId.length);
+            }
+            
+            // Apply JSON changes
+            if (saveFileStructure.jsonData) {
+                for (const jsonItem of saveFileStructure.jsonData) {
+                    if (jsonItem.modified) {
+                        // Convert the modified JSON back to a string
+                        const jsonString = JSON.stringify(jsonItem.data);
+                        const jsonBytes = new TextEncoder().encode(jsonString);
+                        
+                        // Check if the size changed
+                        if (jsonBytes.length !== jsonItem.length) {
+                            alert(`Warning: Modified JSON size has changed from ${jsonItem.length} to ${jsonBytes.length} bytes. This may cause issues with the save file.`);
+                        }
+                        
+                        // Write the modified JSON back to the file
+                        // For safety, use the minimum of the original length and new length
+                        const bytesToWrite = Math.min(jsonBytes.length, jsonItem.length);
+                        for (let i = 0; i < bytesToWrite; i++) {
+                            modifiedData[jsonItem.offset + i] = jsonBytes[i];
+                        }
+                        
+                        // If the new JSON is shorter, pad with spaces
+                        if (jsonBytes.length < jsonItem.length) {
+                            for (let i = jsonBytes.length; i < jsonItem.length; i++) {
+                                modifiedData[jsonItem.offset + i] = 32; // Space character
+                            }
+                        }
+                    }
+                }
             }
             
             // Create a Blob from the modified data

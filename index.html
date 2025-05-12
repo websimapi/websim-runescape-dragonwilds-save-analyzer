@@ -91,12 +91,90 @@
                         <li><strong>Game Objects</strong> - Information about all objects in the world</li>
                     </ol>
                     
+                    <h3>JSON Data in Save Files</h3>
+                    <p>RuneScape Dragonwilds save files contain embedded JSON data structures that hold important game information. Common JSON structures include:</p>
+                    
+                    <div class="feature-list">
+                        <div class="feature-item">
+                            <h4>Inventory Data</h4>
+                            <p>Contains information about the player's items, including counts, item types, and unique identifiers. These structures typically have "GUID" fields and "Count" properties.</p>
+                            <pre class="code-example">{
+  "Version": 53,
+  "0": {
+    "GUID": "HXsFKUOVu6OiwdKZw-9Amg",
+    "ItemData": "qOY004ZJaEaR8DmcDqB2KA",
+    "Count": 6
+  },
+  /* more items */
+}</pre>
+                        </div>
+                        
+                        <div class="feature-item">
+                            <h4>Event Definitions</h4>
+                            <p>Contains information about game events, triggers, and actions.</p>
+                            <pre class="code-example">{
+  "Version": 2,
+  "Definitions": [
+    {
+      "Id": "EventId",
+      "Type": "TriggerType",
+      "Enabled": true
+    }
+  ]
+}</pre>
+                        </div>
+                        
+                        <div class="feature-item">
+                            <h4>Game Statistics</h4>
+                            <p>Contains various game metrics and player statistics.</p>
+                            <pre class="code-example">{
+  "Version": 1,
+  "PlayTime": 3600,
+  "Deaths": 5,
+  "ItemsCrafted": 42
+}</pre>
+                        </div>
+                    </div>
+                    
+                    <div class="data-types-info">
+                        <h3>Understanding JSON Data Types</h3>
+                        <p>When editing JSON data, it's essential to understand the different data types:</p>
+                        <ul>
+                            <li><strong>Strings</strong> - Text enclosed in quotes, like <code>"HXsFKUOVu6OiwdKZw-9Amg"</code></li>
+                            <li><strong>Numbers</strong> - Numeric values without quotes, like <code>6</code> or <code>53</code></li>
+                            <li><strong>Booleans</strong> - Either <code>true</code> or <code>false</code> without quotes</li>
+                            <li><strong>Objects</strong> - Collections of key/value pairs enclosed in <code>{}</code> braces</li>
+                            <li><strong>Arrays</strong> - Ordered lists of values enclosed in <code>[]</code> brackets</li>
+                        </ul>
+                        <p>Always keep the same data type when editing values. For example, don't change <code>6</code> to <code>"6"</code> or <code>true</code> to <code>"true"</code>.</p>
+                    </div>
+                    
+                    <h3>Editing JSON Data</h3>
+                    <p>When editing JSON data in save files, follow these guidelines:</p>
+                    <ul>
+                        <li><strong>Maintain Structure</strong> - Don't change the overall structure of the JSON</li>
+                        <li><strong>Preserve Types</strong> - Keep the same data types (strings, numbers, booleans) as in the original</li>
+                        <li><strong>IDs and GUIDs</strong> - Be careful when modifying IDs or GUIDs as these are used to reference objects</li>
+                        <li><strong>Backup First</strong> - Always create a backup before making changes</li>
+                    </ul>
+                    
+                    <div class="tip-box">
+                        <h4>Editing Tips</h4>
+                        <ul>
+                            <li>Use the "Format JSON" button to make the JSON more readable</li>
+                            <li>You can modify item counts, resources, and some settings safely</li>
+                            <li>Avoid editing complex nested structures unless you know exactly what they do</li>
+                            <li>Size changes are risky - try to keep the overall size of the JSON similar</li>
+                        </ul>
+                    </div>
+                    
                     <h3>Using the Analyzer</h3>
                     <p>To analyze a save file:</p>
                     <ol>
                         <li>Upload your .sav file in the Upload tab</li>
                         <li>Navigate to the Analyze tab to view file contents</li>
                         <li>Use the Edit tab to make changes to world settings</li>
+                        <li>View and edit JSON data through the Player & World Data section</li>
                         <li>Download the modified file to use in your game</li>
                     </ol>
                     
