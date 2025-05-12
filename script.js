@@ -513,12 +513,19 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Try to parse it as JSON
                         const parsedJson = JSON.parse(jsonString);
                         
+                        // Extract context around the JSON
+                        const contextBefore = extractContext(data, Math.max(0, startPos - 100), startPos);
+                        const contextAfter = extractContext(data, jsonEndPos + 1, Math.min(data.length, jsonEndPos + 100));
+                        
                         // If successful, store it
                         foundJsonData.push({
                             offset: startPos,
                             length: jsonEndPos - startPos + 1,
                             data: parsedJson,
-                            rawString: jsonString
+                            rawString: jsonString,
+                            contextBefore,
+                            contextAfter,
+                            type: 'Unknown' // Will be updated by AI analysis
                         });
                         
                         console.log(`Found valid JSON at offset 0x${startPos.toString(16)}`, parsedJson);
@@ -534,12 +541,20 @@ document.addEventListener('DOMContentLoaded', () => {
                                 .replace(/\\(?!["\\bfnrt\/])/g, '\\\\'); // Fix escaping
                             
                             const parsedJson = JSON.parse(cleanedJson);
+                            
+                            // Extract context for this JSON too
+                            const contextBefore = extractContext(data, Math.max(0, startPos - 100), startPos);
+                            const contextAfter = extractContext(data, jsonEndPos + 1, Math.min(data.length, jsonEndPos + 100));
+                            
                             foundJsonData.push({
                                 offset: startPos,
                                 length: jsonEndPos - startPos + 1,
                                 data: parsedJson,
                                 rawString: jsonString,
-                                cleaned: true
+                                contextBefore,
+                                contextAfter,
+                                cleaned: true,
+                                type: 'Unknown' // Will be updated by AI analysis
                             });
                             
                             console.log(`Found and cleaned JSON at offset 0x${startPos.toString(16)}`, parsedJson);
@@ -553,44 +568,323 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error(`Error processing potential JSON at offset 0x${startPos.toString(16)}:`, error);
             }
         }
+        
+        // Once we've found all JSON data, analyze them with AI
+        if (foundJsonData.length > 0) {
+            analyzeJsonStructuresWithAI();
+        }
     }
     
-    // Find matching closing brace for a JSON object
-    function findMatchingCloseBrace(data, startPos) {
-        let depth = 0;
-        let inString = false;
-        let escapeNext = false;
+    // Extract human-readable context around a position in binary data
+    function extractContext(data, start, end) {
+        if (start >= end) return '';
         
-        for (let i = startPos; i < data.length; i++) {
-            const char = data[i];
-            
-            if (escapeNext) {
-                escapeNext = false;
-                continue;
-            }
-            
-            if (char === 34) { // double quote
-                inString = !inString;
-            } else if (inString && char === 92) { // backslash in string
-                escapeNext = true;
-            } else if (!inString) {
-                if (char === 123) { // opening brace
-                    depth++;
-                } else if (char === 125) { // closing brace
-                    depth--;
-                    if (depth === 0) {
-                        return i; // Found matching close brace
-                    }
-                }
-            }
-            
-            // Safety check - if we're too deep or gone too far, abort
-            if (depth > 100 || i - startPos > 100000) {
-                return -1;
+        const contextSlice = data.slice(start, end);
+        let context = '';
+        
+        // Try to extract readable strings from the binary data
+        for (let i = 0; i < contextSlice.length; i++) {
+            const byte = contextSlice[i];
+            // Only include printable ASCII characters
+            if (byte >= 32 && byte <= 126) {
+                context += String.fromCharCode(byte);
+            } else if (byte === 0) {
+                // Handle null bytes (common in save files)
+                context += ' ';
+            } else {
+                // Replace non-printable with a dot
+                context += '.';
             }
         }
         
-        return -1; // No matching close brace found
+        // Clean up the context by replacing multiple dots/spaces with a single one
+        context = context.replace(/\.{3,}/g, '...');
+        context = context.replace(/\s{3,}/g, ' ');
+        
+        return context.trim();
+    }
+    
+    // Use AI to analyze and categorize JSON structures
+    async function analyzeJsonStructuresWithAI() {
+        const statusElement = document.createElement('div');
+        statusElement.className = 'ai-analysis-status';
+        statusElement.textContent = 'Analyzing JSON structures with AI...';
+        document.getElementById('player-data').appendChild(statusElement);
+        
+        // Process JSON structures in batches to avoid overloading the AI service
+        const batchSize = 5;
+        const batches = Math.ceil(foundJsonData.length / batchSize);
+        
+        for (let batchIndex = 0; batchIndex < batches; batchIndex++) {
+            const start = batchIndex * batchSize;
+            const end = Math.min(start + batchSize, foundJsonData.length);
+            const batch = foundJsonData.slice(start, end);
+            
+            statusElement.textContent = `Analyzing JSON structures with AI... (${start + 1}-${end} of ${foundJsonData.length})`;
+            
+            // Process each JSON in the batch
+            const promises = batch.map(async (jsonItem, index) => {
+                try {
+                    // Prepare data for AI analysis
+                    const jsonSample = JSON.stringify(jsonItem.data, null, 2).slice(0, 1500); // Limit size for AI
+                    
+                    // Create a prompt for the AI
+                    const analysisResult = await analyzeJsonWithAI(jsonSample, jsonItem.contextBefore, jsonItem.contextAfter);
+                    
+                    // Update the JSON type based on AI analysis
+                    foundJsonData[start + index].type = analysisResult.type;
+                    foundJsonData[start + index].description = analysisResult.description;
+                    foundJsonData[start + index].editingTips = analysisResult.editingTips;
+                    
+                    return analysisResult;
+                } catch (error) {
+                    console.error(`Error analyzing JSON at offset 0x${jsonItem.offset.toString(16)}:`, error);
+                    return null;
+                }
+            });
+            
+            // Wait for all promises in this batch to resolve
+            await Promise.all(promises);
+            
+            // Small delay between batches to prevent rate limiting
+            if (batchIndex < batches - 1) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+        
+        // Update the UI with the analyzed JSON data
+        statusElement.remove();
+        refreshPlayerDataView();
+    }
+    
+    // Analyze a single JSON structure using AI
+    async function analyzeJsonWithAI(jsonSample, contextBefore, contextAfter) {
+        try {
+            // Use the websim.chat.completions.create method for AI inference
+            const completion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are an AI specialized in analyzing game save file data structures, particularly for RuneScape Dragonwilds. 
+                        Your task is to identify the purpose and type of JSON data structures found in save files.
+                        Analyze both the JSON content and the surrounding context text to determine what game element this data represents.
+                        Be specific and concise in your classification.
+                        Respond directly with JSON, following this schema, and no other text:
+                        {
+                            "type": "string", // A specific category name like "Inventory", "PlayerStats", "QuestLog", "GameSettings", "WorldState", etc.
+                            "description": "string", // A brief 1-2 sentence description of what this data structure likely represents
+                            "editingTips": "string" // Brief advice on what fields are safe to edit and which should be left alone
+                        }`
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { 
+                                type: "text", 
+                                text: `Analyze this JSON structure from a RuneScape Dragonwilds save file.
+                                Context text before the JSON: "${contextBefore}"
+                                JSON data: ${jsonSample}
+                                Context text after the JSON: "${contextAfter}"
+                                What type of game data does this JSON structure represent?`
+                            }
+                        ]
+                    }
+                ],
+                json: true
+            });
+            
+            let result;
+            try {
+                // Try to parse the response as JSON
+                if (typeof completion.content === 'string') {
+                    result = JSON.parse(completion.content);
+                } else {
+                    // If it's already an object, use it directly
+                    result = completion.content;
+                }
+            } catch (error) {
+                // Fallback in case the response is not valid JSON
+                console.error("Error parsing AI response:", error, "Response was:", completion.content);
+                result = {
+                    type: "Unknown",
+                    description: "Could not determine the structure's purpose",
+                    editingTips: "Avoid editing unknown structures"
+                };
+            }
+            
+            return result;
+        } catch (error) {
+            console.error("Error calling AI service:", error);
+            return {
+                type: "Unknown",
+                description: "AI analysis failed",
+                editingTips: "Avoid editing this structure as its purpose could not be determined"
+            };
+        }
+    }
+    
+    // Refresh the player data view after AI analysis
+    function refreshPlayerDataView() {
+        const playerDataElement = document.getElementById('player-data');
+        
+        if (!playerDataElement || !saveFileStructure || !saveFileStructure.jsonData) return;
+        
+        // Update UI with analyzed JSON data
+        let playerDataHtml = '';
+        
+        if (saveFileStructure.jsonData && saveFileStructure.jsonData.length > 0) {
+            playerDataHtml = `<p>Found ${saveFileStructure.jsonData.length} JSON data structures in save file:</p>`;
+            playerDataHtml += '<div class="json-summary-container">';
+            
+            saveFileStructure.jsonData.forEach((json, index) => {
+                // Add the AI-analyzed type and description
+                const jsonType = json.type || 'Unknown';
+                const description = json.description || '';
+                
+                playerDataHtml += `
+                <div class="json-summary ${jsonType.toLowerCase().replace(/\s+/g, '-')}">
+                    <h4>JSON Structure #${index + 1} - ${jsonType}</h4>
+                    <p class="json-description">${description}</p>
+                    <p>Offset: 0x${json.offset.toString(16).padStart(8, '0')}, Size: ${json.length} bytes</p>
+                    <button class="action-btn view-json-btn" data-index="${index}">View/Edit JSON</button>
+                </div>`;
+            });
+            
+            playerDataHtml += '</div>';
+            
+            // Add the JSON viewer modal if not already present
+            if (!document.getElementById('json-modal')) {
+                playerDataHtml += `
+                <div id="json-modal" class="modal">
+                    <div class="modal-content">
+                        <span class="close-modal">&times;</span>
+                        <h3 id="json-modal-title">JSON Data</h3>
+                        <div id="json-description-box" class="json-description-box"></div>
+                        <div class="json-edit-container">
+                            <textarea id="json-editor"></textarea>
+                        </div>
+                        <div id="json-editing-tips" class="json-editing-tips"></div>
+                        <div class="json-buttons">
+                            <button id="save-json-btn" class="action-btn">Save Changes</button>
+                            <button id="format-json-btn" class="action-btn">Format JSON</button>
+                        </div>
+                        <p class="json-warning">Warning: Editing JSON data directly may cause game corruption if not done correctly.</p>
+                    </div>
+                </div>`;
+            }
+        } else if (saveFileStructure.playerData.length > 0) {
+            playerDataHtml = '<table class="data-table">';
+            playerDataHtml += '<tr><th>Offset</th><th>Marker</th><th>Data</th></tr>';
+            
+            for (const entry of saveFileStructure.playerData) {
+                playerDataHtml += `<tr><td>0x${entry.offset.toString(16).padStart(2, '0')}</td><td>${entry.marker}</td><td>${entry.value}</td></tr>`;
+            }
+            
+            playerDataHtml += '</table>';
+        } else {
+            playerDataHtml = '<p>Advanced player data parsing requires more specific knowledge of the save file format.</p>';
+            playerDataHtml += '<p>No JSON data structures detected in this save file.</p>';
+        }
+        
+        playerDataElement.innerHTML = playerDataHtml;
+        
+        // Set up JSON viewer modal functionality if JSON was found
+        if (saveFileStructure.jsonData && saveFileStructure.jsonData.length > 0) {
+            setupJsonModal();
+        }
+    }
+    
+    // Enhanced modal setup with AI analysis results
+    function setupJsonModal() {
+        const modal = document.getElementById('json-modal');
+        const closeBtn = document.querySelector('.close-modal');
+        const viewBtns = document.querySelectorAll('.view-json-btn');
+        const saveJsonBtn = document.getElementById('save-json-btn');
+        const formatJsonBtn = document.getElementById('format-json-btn');
+        const jsonEditor = document.getElementById('json-editor');
+        const jsonModalTitle = document.getElementById('json-modal-title');
+        const jsonDescriptionBox = document.getElementById('json-description-box');
+        const jsonEditingTips = document.getElementById('json-editing-tips');
+        
+        let currentJsonIndex = -1;
+        
+        // Open modal when View/Edit button is clicked
+        viewBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.getAttribute('data-index'));
+                currentJsonIndex = index;
+                
+                const jsonData = saveFileStructure.jsonData[index];
+                const jsonType = jsonData.type || 'Unknown';
+                
+                // Set the title with the AI-determined type
+                jsonModalTitle.textContent = `JSON Data Structure #${index + 1} - ${jsonType}`;
+                
+                // Display the AI-generated description
+                if (jsonData.description) {
+                    jsonDescriptionBox.innerHTML = `<p>${jsonData.description}</p>`;
+                    jsonDescriptionBox.style.display = 'block';
+                } else {
+                    jsonDescriptionBox.style.display = 'none';
+                }
+                
+                // Display editing tips if available
+                if (jsonData.editingTips) {
+                    jsonEditingTips.innerHTML = `<h4>Editing Tips</h4><p>${jsonData.editingTips}</p>`;
+                    jsonEditingTips.style.display = 'block';
+                } else {
+                    jsonEditingTips.style.display = 'none';
+                }
+                
+                // Format the JSON for better readability
+                jsonEditor.value = JSON.stringify(jsonData.data, null, 2);
+                
+                modal.style.display = 'block';
+            });
+        });
+        
+        // Close modal when X is clicked
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        // Close modal when clicking outside it
+        window.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+        
+        // Format JSON button
+        formatJsonBtn.addEventListener('click', () => {
+            try {
+                const jsonObj = JSON.parse(jsonEditor.value);
+                jsonEditor.value = JSON.stringify(jsonObj, null, 2);
+            } catch (error) {
+                alert(`Error formatting JSON: ${error.message}`);
+            }
+        });
+        
+        // Save JSON changes
+        saveJsonBtn.addEventListener('click', () => {
+            if (currentJsonIndex === -1) return;
+            
+            try {
+                // Parse the edited JSON to validate it
+                const editedJson = JSON.parse(jsonEditor.value);
+                
+                // Update the JSON in our data structure
+                saveFileStructure.jsonData[currentJsonIndex].data = editedJson;
+                
+                // Mark this JSON as modified for when we save changes
+                saveFileStructure.jsonData[currentJsonIndex].modified = true;
+                
+                alert('JSON changes saved. Click "Save Changes" on the Edit tab to apply to the save file.');
+                modal.style.display = 'none';
+            } catch (error) {
+                alert(`Error: Invalid JSON: ${error.message}`);
+            }
+        });
     }
     
     // Analyze save file
@@ -870,90 +1164,6 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#039;");
-    }
-    
-    // Set up the JSON modal for viewing and editing
-    function setupJsonModal() {
-        const modal = document.getElementById('json-modal');
-        const closeBtn = document.querySelector('.close-modal');
-        const viewBtns = document.querySelectorAll('.view-json-btn');
-        const saveJsonBtn = document.getElementById('save-json-btn');
-        const formatJsonBtn = document.getElementById('format-json-btn');
-        const jsonEditor = document.getElementById('json-editor');
-        const jsonModalTitle = document.getElementById('json-modal-title');
-        
-        let currentJsonIndex = -1;
-        
-        // Open modal when View/Edit button is clicked
-        viewBtns.forEach(btn => {
-            btn.addEventListener('click', () => {
-                const index = parseInt(btn.getAttribute('data-index'));
-                currentJsonIndex = index;
-                
-                const jsonData = saveFileStructure.jsonData[index];
-                let jsonType = 'Unknown';
-                
-                if (jsonData.data.Version) {
-                    if (jsonData.data.Definitions && Array.isArray(jsonData.data.Definitions)) {
-                        jsonType = 'Event Definitions';
-                    } else if (jsonData.data.MaxSlotIndex !== undefined || jsonData.data.AllowAdds !== undefined) {
-                        jsonType = 'Inventory';
-                    } else {
-                        jsonType = 'Game Data';
-                    }
-                }
-                
-                jsonModalTitle.textContent = `JSON Data Structure #${index + 1} - ${jsonType}`;
-                
-                // Format the JSON for better readability
-                jsonEditor.value = JSON.stringify(jsonData.data, null, 2);
-                
-                modal.style.display = 'block';
-            });
-        });
-        
-        // Close modal when X is clicked
-        closeBtn.addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
-        
-        // Close modal when clicking outside it
-        window.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.style.display = 'none';
-            }
-        });
-        
-        // Format JSON button
-        formatJsonBtn.addEventListener('click', () => {
-            try {
-                const jsonObj = JSON.parse(jsonEditor.value);
-                jsonEditor.value = JSON.stringify(jsonObj, null, 2);
-            } catch (error) {
-                alert(`Error formatting JSON: ${error.message}`);
-            }
-        });
-        
-        // Save JSON changes
-        saveJsonBtn.addEventListener('click', () => {
-            if (currentJsonIndex === -1) return;
-            
-            try {
-                // Parse the edited JSON to validate it
-                const editedJson = JSON.parse(jsonEditor.value);
-                
-                // Update the JSON in our data structure
-                saveFileStructure.jsonData[currentJsonIndex].data = editedJson;
-                
-                // Mark this JSON as modified for when we save changes
-                saveFileStructure.jsonData[currentJsonIndex].modified = true;
-                
-                alert('JSON changes saved. Click "Save Changes" on the Edit tab to apply to the save file.');
-                modal.style.display = 'none';
-            } catch (error) {
-                alert(`Error: Invalid JSON: ${error.message}`);
-            }
-        });
     }
     
     // Add JSON editor styling
