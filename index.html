@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RuneScape Dragonwilds Save Analyzer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <img src="logo.png" alt="RuneScape Dragonwilds Save Analyzer Logo" class="logo">
+            <h1>RuneScape Dragonwilds Save Analyzer</h1>
+            <p>Upload, analyze, and modify your RuneScape: Dragonwilds save files</p>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="upload">Upload</button>
+            <button class="tab-btn" data-tab="analyze">Analyze</button>
+            <button class="tab-btn" data-tab="edit">Edit</button>
+        </div>
+
+        <div class="tab-content">
+            <div id="upload" class="tab-pane active">
+                <div class="upload-zone">
+                    <p>Drop your .sav file here or</p>
+                    <input type="file" id="file-input" accept=".sav">
+                    <label for="file-input" class="upload-btn">Choose File</label>
+                </div>
+                <div class="file-info" id="file-info">
+                    <p>No file selected</p>
+                </div>
+            </div>
+
+            <div id="analyze" class="tab-pane">
+                <div class="analysis-container">
+                    <div class="section-title">Header Information</div>
+                    <div id="header-info" class="info-section"></div>
+                    
+                    <div class="section-title">World Information</div>
+                    <div id="world-info" class="info-section"></div>
+                    
+                    <div class="section-title">Player Data</div>
+                    <div id="player-data" class="info-section"></div>
+                    
+                    <div class="section-title">Raw Data View</div>
+                    <div class="raw-container">
+                        <div id="hex-view" class="raw-view"></div>
+                        <div id="text-view" class="raw-view"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="edit" class="tab-pane">
+                <div class="edit-container">
+                    <div class="edit-warning">
+                        <p>⚠️ Warning: Editing save files may cause game instability. Always backup your save files before making changes.</p>
+                    </div>
+                    <div id="edit-fields"></div>
+                    <button id="save-changes" class="action-btn">Save Changes</button>
+                    <a id="download-link" class="action-btn" download="modified_save.sav">Download Modified Save</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
